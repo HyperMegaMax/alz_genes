@@ -103,8 +103,7 @@ install.packages(c(
   "igraph", "ggraph", "tidygraph", "qvalue"
 ))
 
-```r
----
+```
 
 ## License
 The project is available under the MIT License—see [LICENSE](LICENSE).
