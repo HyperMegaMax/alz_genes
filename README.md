@@ -16,11 +16,14 @@ This repository contains R scripts and analysis results for the RNA-seq data fro
 
 
 ## Repository Structure
-- **data/** – raw and processed data.
-- **scripts/** – R scripts for analysis.
+- **scripts/** – Directory containing main R scripts for analysis:
+    - `preprocessing.R` – data import, cleaning, and sample filtering
+    - `eda_pca_outliers.R` – exploratory data analysis, PCA, and outlier detection
+    - `differential_expression_limma_boot.R` – differential expression analysis using limma with bootstrap-based FDR correction
+    - `FDR_correction_testing.R` – multiple testing correction and benchmarking (including BH, BY, Storey, bootstrap)
+    - `network_analysis.R` – construction and clustering of gene co-expression or interaction networks
 - **results/** – output tables from analyses.
 - **figures/** – plots and visualizations.
-- **docs/** – supplementary documentation and reports.
 
 ## Reproduction Instructions
 1. Clone the repository.
