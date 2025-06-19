@@ -33,9 +33,8 @@ Refer to the listed Synapse IDs and the AMP‑AD documentation to request and do
     - `FDR_correction_testing.R` – multiple testing correction and benchmarking (including BH, BY, Storey, bootstrap)
     - `network_analysis.R` – construction and clustering of gene co-expression or interaction networks
 - **results/** – output tables from analyses.
-    - **new_clusters_xl2.xlsx** – Results of network analysis and Louvain clustering.
-    - **very_important_genes_1004_3.xlsx** – Results of differential expression analysis.
-- **figures/** – plots and visualizations.
+    - `new_clusters_xl2.xlsx` – Results of network analysis and Louvain clustering.
+    - `very_important_genes_1004_3.xlsx` – Results of differential expression analysis.
 
 ## Reproduction Instructions
 1. Clone the repository.
