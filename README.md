@@ -14,6 +14,16 @@ This repository contains R scripts and analysis results for the RNA-seq data fro
 - Network analysis
 - FDR correction methods comparisson
 
+## Data Requirements
+
+This project uses post‑mortem RNA‑seq data from the Mount Sinai Brain Bank (MSBB) and the Religious Orders Study & Memory and Aging Project (ROSMAP).  
+**These datasets must be obtained separately before analysis.** Both are publicly available through the AMP‑AD Knowledge Portal (Synapse):
+
+- **MSBB**: available at [Synapse syn3159438](https://www.synapse.org/Synapse:syn3159438)
+- **ROSMAP**: available at [Synapse syn3219045](https://www.synapse.org/Synapse:syn3219045)
+
+Refer to the listed Synapse IDs and the AMP‑AD documentation to request and download the necessary clinical, metadata, and expression files.
+
 
 ## Repository Structure
 - **scripts/** – Directory containing main R scripts for analysis:
