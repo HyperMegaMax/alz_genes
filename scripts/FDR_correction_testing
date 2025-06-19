@@ -1,0 +1,273 @@
+# Install required packages if not already installed
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("qvalue")
+
+# Load necessary libraries
+library(compcodeR)
+library(edgeR)
+library(limma)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library(reshape2)
+library(FactoMineR)
+library(factoextra)
+library(tidyr)
+library(tibble)
+library(DESeq2)
+library(NOISeq)
+library(tidyverse)
+
+# Define directories for storing data and results
+tmpdir <- "/Users/maxklyuev/Desktop/megabenchmark/compcode/"
+tmpdir_data <- "/Users/maxklyuev/Desktop/megabenchmark/compcode/data/"
+tmpdir_analysis <- "/Users/maxklyuev/Desktop/megabenchmark/compcode/analysis/"
+tmpdir_analysis_boot <- "/Users/maxklyuev/Desktop/megabenchmark/compcode/analysis/boot_limma/"
+
+# Function for differential expression analysis with bootstrap-based FDR correction
+run_DE_analysis <- function(counts, group, q_target) {
+  library(edgeR)
+  library(limma)
+  #library(variancePartition) # Uncomment if needed for variance analysis
+
+  #### 1. Prepare data and normalize ####
+  dge <- DGEList(counts = counts, group = group)
+  dge <- calcNormFactors(dge)
+
+  #### 2. Design matrix and voom transformation ####
+  design <- model.matrix(~ group)
+  v <- voom(dge, design, plot = TRUE)
+
+  #### 3. Fit the linear model and apply empirical Bayes moderation ####
+  fit <- lmFit(v, design)
+  fit <- eBayes(fit)
+
+  #### 4. Create null (H0) model by using residuals ####
+  residuals_values <- residuals(fit, y = v$E)
+  null_voom <- v
+  null_voom$E <- residuals_values
+  fit_null <- lmFit(null_voom, design)
+  fit_null <- eBayes(fit_null)
+
+  #### 5. Extract results ####
+  results <- topTable(fit, coef = 2, number = Inf, adjust.method = "BH")
+  results_null <- topTable(fit_null, coef = 2, number = Inf, adjust.method = "none")
+
+  #### 6. Create metadata (targets) ####
+  metadata <- data.frame(group = factor(null_voom$targets$group))
+  rownames(metadata) <- colnames(null_voom$E)
+
+  #### 7. Bootstrap FDR estimation ####
+  create_bootstrap_dataset <- function(data) {
+    bootstrap_sample <- data[, sample(seq_len(ncol(data)), size = ncol(data), replace = TRUE)]
+    return(bootstrap_sample)
+  }
+
+  p_values_list_boot <- list()
+  n_boot <- 300
+  for (i in 1:n_boot) {
+    expr_data <- create_bootstrap_dataset(null_voom$E)
+    colnames(expr_data) <- rownames(metadata)
+    expr_data <- as.matrix(expr_data)
+    mode(expr_data) <- "numeric"
+    design_boot <- model.matrix(~ group, data = metadata)
+    fit_boot <- lmFit(expr_data, design_boot)
+    fit_boot <- eBayes(fit_boot)
+    top_genes <- topTable(fit_boot, number = Inf, adjust.method = "none", sort.by = "none")
+    p_values_list_boot[[i]] <- top_genes$P.Value
+  }
+
+  # Summarize bootstrap results
+  results_summary_bootstrap <- data.frame(
+    Bootstrap = seq_along(p_values_list_boot),
+    MinPValue = sapply(p_values_list_boot, function(p_vals) min(p_vals, na.rm = TRUE)),
+    stringsAsFactors = FALSE
+  )
+  p_values <- results$P.Value
+  results_summary_bootstrap$PValueGreaterThanMin <- sapply(
+    results_summary_bootstrap$MinPValue,
+    function(min_p_val) sum(p_values > min_p_val, na.rm = TRUE)
+  )
+  pi_zero <- median(results_summary_bootstrap$PValueGreaterThanMin, na.rm = TRUE) / nrow(counts)
+
+  #### 8. Find optimal p-value threshold by iterative search ####
+  tolerance <- 0.00001
+  max_iter <- 1000
+  p_lower <- min(results$P.Value, na.rm = TRUE)
+  p_upper <- max(results$P.Value, na.rm = TRUE)
+  iteration_count <- 0
+  best_p_val <- NA
+  best_q_diff <- Inf
+  best_q_value <- NA
+
+  while ((p_upper - p_lower) > tolerance && iteration_count < max_iter) {
+    iteration_count <- iteration_count + 1
+    p_mid <- (p_lower + p_upper) / 2
+    count_significant_genes <- sum(results$P.Value < p_mid, na.rm = TRUE)
+    if (count_significant_genes == 0) {
+      warning("No significant genes at this threshold. Stopping search.")
+      break
+    }
+    SignificantGenesBoot <- mean(sapply(p_values_list_boot, function(p_vals) {
+      sum(p_vals < p_mid, na.rm = TRUE)
+    }))
+    q_value <- (SignificantGenesBoot / count_significant_genes) * pi_zero
+    q_diff <- abs(q_value - q_target)
+    cat("Iteration:", iteration_count,
+        "p_mid:", p_mid,
+        "q_value:", q_value,
+        "significant genes:", count_significant_genes, "\n")
+    # Save the best result (closest to q_target)
+    if (q_diff < best_q_diff) {
+      best_q_diff <- q_diff
+      best_p_val <- p_mid
+      best_q_value <- q_value
+    }
+    if (q_value > q_target) {
+      p_upper <- p_mid
+    } else {
+      p_lower <- p_mid
+    }
+  }
+  cat("\nBest solution found:\n")
+  cat("p-value threshold:", best_p_val, "\n")
+  cat("q-value:", best_q_value, "\n")
+  cat("Number of significant genes:", sum(results$P.Value < best_p_val, na.rm = TRUE), "\n")
+
+  #### 9. Extract significant genes ####
+  significant_results <- results[results$P.Value < best_p_val, ]
+  num_significant_genes <- nrow(significant_results)
+
+  #### 10. Return results as a list ####
+  return(list(significant_results = significant_results,
+              p_value = best_p_val,
+              qvalue = best_q_value,
+              num_significant_genes = num_significant_genes))
+}
+
+# Example loading reference data for simulation (relative means and dispersions)
+relmeans <- readRDS(file = file.path(tmpdir_data, "relmeans.rds"))
+gene_disp <- readRDS(file = file.path(tmpdir_data, "gene_disp.rds"))
+
+# Example: Synthetic data generation grid
+samples_per_cond_vec <- c(10, 50)
+n_diffexp_vec <- c(100, 300, 1000, 4000)
+fraction_up_vec <- c(0.5)
+param_grid <- expand.grid(samples.per.cond = samples_per_cond_vec,
+                          n.diffexp = n_diffexp_vec,
+                          fraction.upregulated = fraction_up_vec,
+                          stringsAsFactors = FALSE)
+# Fixed parameters for synthetic data
+n.vars <- 16346
+seqdepth <- 3.5e7
+minfact <- 0.5
+maxfact <- 2.5
+between.group.diffdisp <- TRUE
+filter.threshold.total <- 10
+filter.threshold.mediancpm <- 0.5
+fraction.non.overdispersed <- 0
+random.outlier.high.prob <- 0.03
+random.outlier.low.prob <- 0.03
+single.outlier.high.prob <- 0.015
+single.outlier.low.prob <- 0.5
+effect.size <- 1.2
+
+# Generate synthetic datasets for each combination in the parameter grid
+for (i in 1:nrow(param_grid)) {
+  curr_samples <- param_grid$samples.per.cond[i]
+  curr_ndiff <- param_grid$n.diffexp[i]
+  curr_frac <- param_grid$fraction.upregulated[i]
+  for (rep in 1:5) {
+    cat("Generating synthetic data:", i, rep, "\n")
+    dataset_name <- paste0("NullData_s", curr_samples,
+                           "_ndiff", curr_ndiff,
+                           "_frac", curr_frac,
+                           "_rep", rep)
+    data_stage_null <- generateSyntheticData(
+      dataset = dataset_name,
+      n.vars = n.vars,
+      samples.per.cond = curr_samples,
+      n.diffexp = curr_ndiff,
+      repl.id = rep,
+      seqdepth = seqdepth,
+      minfact = minfact,
+      maxfact = maxfact,
+      relmeans = relmeans,
+      dispersions = gene_disp,
+      fraction.upregulated = curr_frac,
+      between.group.diffdisp = between.group.diffdisp,
+      filter.threshold.total = filter.threshold.total,
+      filter.threshold.mediancpm = filter.threshold.mediancpm,
+      fraction.non.overdispersed = fraction.non.overdispersed,
+      random.outlier.high.prob = random.outlier.high.prob,
+      random.outlier.low.prob = random.outlier.low.prob,
+      single.outlier.high.prob = single.outlier.high.prob,
+      single.outlier.low.prob = single.outlier.low.prob,
+      effect.size = effect.size
+    )
+    saveRDS(data_stage_null, file = file.path(tmpdir_data, paste0(dataset_name, ".rds")))
+  }
+}
+
+# Differential expression analysis on synthetic datasets (voom-limma, edgeR, DESeq2)
+data_files <- list.files(path = tmpdir_data, pattern = "\\.rds$", full.names = TRUE)
+for (filename in data_files) {
+  cat("Analyzing file:", filename, "\n")
+  # voom-limma
+  runDiffExp(data.file = filename,
+             result.extent = "voom.limma",
+             Rmdfunction = "voom.limma.createRmd",
+             output.directory = tmpdir_analysis,
+             norm.method = "TMM")
+  # edgeR exact test
+  runDiffExp(data.file = filename,
+             result.extent = "edgeR.exact",
+             Rmdfunction = "edgeR.exact.createRmd",
+             output.directory = tmpdir_analysis,
+             norm.method = "TMM",
+             trend.method = "movingave",
+             disp.type = "tagwise")
+  # DESeq2 Wald test
+  runDiffExp(data.file = filename,
+             result.extent = "DESeq2",
+             Rmdfunction = "DESeq2.createRmd",
+             output.directory = tmpdir_analysis,
+             fit.type = "parametric",
+             test = "Wald",
+             beta.prior = TRUE,
+             independent.filtering = TRUE,
+             cooks.cutoff = TRUE,
+             impute.outliers = TRUE)
+}
+
+# Analysis with bootstrap-corrected limma
+for (filename in data_files) {
+  cat("Running limma_boot for:", filename, "\n")
+  data_object <- readRDS(filename)
+  counts <- data_object@count.matrix
+  group <- factor(data_object@sample.annotations$condition)
+  de_analysis_results <- run_DE_analysis(counts = counts, group = group, q_target = 0.05)
+  method_short <- data_object@method.names$short.name
+  n_diffexp <- data_object@info.parameters$n.diffexp
+  samples_cond <- data_object@info.parameters$samples.per.cond
+  frac_up <- data_object@info.parameters$fraction.upregulated
+  results_data_obj <- as.data.frame(data_object@variable.annotations)
+  true_de <- rownames(results_data_obj[results_data_obj$differential.expression == 1, ])
+  combined_results <- list(
+    de_analysis = de_analysis_results,
+    method_short = "boot_limma",
+    n_diffexp = n_diffexp,
+    samples_cond = samples_cond,
+    frac_up = frac_up,
+    true_de = true_de
+  )
+  result_filename <- file.path(tmpdir_analysis_boot, paste0(basename(filename), "_runDE_analysis_results.rds"))
+  saveRDS(combined_results, file = result_filename)
+  cat("Saved run_DE_analysis results for file:", filename, "\n")
+}
+
+# ---- Metric computation and result aggregation ----
+# Compute classic DE metrics (TP, FP, precision, recall, FDR) for each method and save the summary tables as CSVs.
+# See previous messages for code blocks for FDR, precision, recall, F1-score plotting, and final summaries.
+# (You can copy the blocks from above directly into your script.)
